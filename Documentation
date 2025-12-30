@@ -1,0 +1,559 @@
+# Swiss Dwellings Energy Consumption Analysis - Complete Documentation
+
+## 1. Project Overview
+
+### 1.1 Project Context
+This project analyzes Swiss residential building data to predict energy consumption using geometric, topological, and environmental features. The dataset originates from Archilyse AG, containing detailed information on 42,207 apartments across 3,093 buildings in Switzerland.
+
+### 1.2 Problem Statement
+The primary objective is to develop a predictive model for building energy consumption using architectural and environmental features. Since the original dataset lacks actual energy consumption data, a realistic synthetic target variable is created based on Swiss building physics principles and standards (SIA 380/1). The project evaluates whether proper data preprocessing and feature engineering can create a model that captures realistic energy consumption patterns.
+
+### 1.3 Project Objectives
+1. **Exploratory Data Analysis**: Understand dataset structure, data quality, and feature relationships
+2. **Data Cleaning & Preprocessing**: Handle missing values, optimize data types, and prepare features for modeling
+3. **Feature Engineering**: Create domain-relevant features based on building physics
+4. **Model Development**: Implement and compare tree-based models as recommended
+5. **Evaluation**: Assess model performance with emphasis on preprocessing effectiveness rather than predictive optimization
+
+## 2. Dataset Description
+
+### 2.1 Source Data
+- **Primary Dataset**: `simulations.csv` - 367 simulation columns aggregated per room/area
+  - Dimensions: Original 347,583 rows × 367 columns
+  - Content: Layout, view, sun, noise, and connectivity simulations
+  - Aggregation: Per area basis with identifiers linking to buildings
+  
+- **Geometric Dataset**: `geometries.csv` - Raw geometric elements
+  - Dimensions: 2,501,540 rows × 8 columns
+  - Content: Area, separator, opening, and feature geometries
+  - Detail: Contains ~1.2 million separators, ~550,000 openings, ~400,000 areas
+  
+### 2.2 Key Identifiers
+- `area_id`: Individual room identifier
+- `apartment_id`: Apartment unit identifier  
+- `building_id`: Building identifier (used for merging geometries)
+- `site_id`: Site/location identifier
+
+### 2.3 Feature Categories
+1. **Layout Features**: Area, perimeter, compactness, window/door characteristics
+2. **View Features**: Visible buildings, greenery, sky, mountains, streets (in steradians)
+3. **Sun Features**: Daylight simulation results at various times (kilolux)
+4. **Noise Features**: Traffic and train noise levels (dBA)
+5. **Connectivity Features**: Distances to key areas and centrality measures
+
+## 3. Methodology
+
+### 3.1 Data Loading and Initial Processing
+
+#### 3.1.1 Memory Optimization Strategy
+The dataset is processed with memory efficiency as a priority:
+- **Chunked Reading**: Files read in optimized chunks to manage memory
+- **Dtype Optimization**: Columns converted to minimum sufficient types
+  - Integers: Downcast to int32/int16/int8 where possible
+  - Floats: Converted to float32
+  - Categoricals: Converted to category type for low-cardinality features
+- **Explicit Cleanup**: Manual garbage collection between pipeline stages
+
+#### 3.1.2 Sampling Approach
+For computational efficiency during development:
+- Training/EDA: 100,000 rows sampled from 347,583 total
+- Final processing: Full dataset processed with memory optimization
+
+### 3.2 Data Aggregation
+
+#### 3.2.1 Aggregation Level Decision
+The analysis operates at the **apartment level** rather than room level:
+- **Rationale**: Energy consumption is typically measured per dwelling unit
+- **Method**: Mean aggregation for numeric features, mode for categorical features
+- **Result**: 100,000 room-level records → 11,913 apartment-level records
+
+#### 3.2.2 Geometries Data Integration
+Geometric data is merged at the building level:
+- **Merge Key**: `building_id`
+- **Processing**: Building-level geometric features aggregated to apartment level
+- **Features Added**: Footprint area, height, volume, compactness, altitude, canton
+
+### 3.3 Data Quality Assessment and Cleaning
+
+#### 3.3.1 Missing Value Analysis
+Initial EDA revealed:
+- **Total Missing**: 4.17% of all values
+- **High-Missing Features**: 7 features with >90% missing values
+- **Pattern**: Missingness concentrated in connectivity features for less common room types
+
+#### 3.3.2 Missing Value Treatment Strategy
+Implemented a tiered approach:
+
+1. **High-Missing Features** (>90% missing):
+   - Removed from analysis (7 features dropped)
+   - Example: `connectivity_loggia_distance_*` (91.7% missing)
+
+2. **Moderate-Missing Features** (10-90% missing):
+   - Numeric: Median imputation
+   - Categorical: Mode imputation or "Unknown" category
+   - Example: `connectivity_living_dining_distance_*` (45.6% missing)
+
+3. **Low-Missing Features** (<10% missing):
+   - Same imputation strategy as moderate cases
+   - Preserved for analysis due to low impact
+
+#### 3.3.3 Outlier Handling
+- **Method**: IQR-based detection with 1.5×IQR bounds
+- **Treatment**: Winsorization (capping at percentiles) rather than removal
+- **Rationale**: Preserve dataset size while reducing extreme value influence
+
+### 3.4 Feature Engineering
+
+#### 3.4.1 Created Features
+Based on building physics principles:
+
+1. **Area-to-Window Ratio**:
+   ```
+   area_window_ratio = layout_area / (layout_window_perimeter + epsilon)
+   ```
+   - **Interpretation**: Window area relative to room size affects heat loss/gain
+
+2. **Solar Efficiency Score**:
+   ```
+   solar_efficiency = sun_201806211200_median × layout_window_perimeter
+   ```
+   - **Interpretation**: Solar gain potential based on window exposure
+
+3. **Compactness Efficiency**:
+   ```
+   compactness_squared = layout_compactness²
+   ```
+   - **Interpretation**: Non-linear relationship with energy efficiency
+
+4. **Altitude Energy Factor**:
+   ```
+   altitude_energy_factor = altitude / 1000
+   ```
+   - **Interpretation**: Higher altitude → colder climate → increased heating needs
+
+5. **Building Age Features**:
+   ```
+   building_age_years = 2024 - building_age
+   is_modern_building = (building_age_years < 30)
+   ```
+   - **Interpretation**: Age-related efficiency differences
+
+#### 3.4.2 Feature Selection
+
+**Variance-Based Filtering**:
+- **Threshold**: Features with variance < 0.01 removed
+- **Impact**: 358 features → 210 features retained
+- **Rationale**: Remove near-constant features that contribute noise
+
+**Correlation-Based Selection**:
+- **Method**: Absolute correlation with target variable
+- **Selection**: Top 15 numeric features by correlation
+- **Result**: Features explaining 61.8% of variance in target
+
+### 3.5 Target Variable Creation
+
+#### 3.5.1 Synthetic Target Rationale
+Since the dataset lacks actual energy consumption data, a synthetic target is created based on:
+
+1. **Swiss Building Standards**: SIA 380/1 energy reference values
+2. **Building Physics Principles**: Heat transfer through envelopes
+3. **Realistic Distributions**: Log-normal mixture for different building types
+4. **Feature-Based Adjustments**: Realistic impact coefficients for key features
+
+#### 3.5.2 Target Generation Algorithm
+
+```python
+# Pseudo-code for target generation
+1. Create base energy distribution by building type:
+   - Modern buildings (30%): N(90, 15) → 60-120 kWh/m²/year
+   - Old buildings (40%): LogN(4.8, 0.3) → 120-250 kWh/m²/year  
+   - Standard buildings (30%): N(130, 25) → 80-180 kWh/m²/year
+
+2. Apply feature-based adjustments:
+   - Area: +50 impact coefficient
+   - Compactness: -30 (more compact = better insulation)
+   - Window perimeter: +40 (more windows = more heat loss)
+   - Sun exposure: -25 (more sun = passive heating)
+   - Altitude: +30 (higher = colder = more heating)
+   - Age: +25 (older = less efficient)
+
+3. Convert to annual energy:
+   annual_energy = base_energy × area × (0.9 + 0.3 × log(area/100))
+
+4. Apply variation factors:
+   - Building quality: N(1.0, 0.125)
+   - Occupancy: N(1.0, 0.075)
+   - Climate: [0.85, 1.0, 1.15] with probabilities [0.2, 0.6, 0.2]
+
+5. Final adjustments:
+   - Clip to realistic range: 3,000-40,000 kWh/year
+   - Add noise: N(0, 5% of std)
+   - Convert to integer values
+```
+
+#### 3.5.3 Target Statistics
+- **Mean**: 3,203 kWh/year
+- **Standard Deviation**: 619 kWh/year  
+- **Range**: 3,000 - 13,660 kWh/year
+- **Distribution**: Right-skewed with concentration in lower range
+- **CV**: 19.3% (moderate variability)
+
+### 3.6 Modeling Approach
+
+#### 3.6.1 Model Selection Rationale
+Tree-based models selected per project requirements:
+
+1. **GradientBoostingRegressor**:
+   - Sequential tree building with gradient optimization
+   - Handles non-linear relationships well
+   - Good for feature interactions
+
+2. **RandomForestRegressor**:
+   - Ensemble of decorrelated trees
+   - Robust to outliers and noise
+   - Provides feature importance measures
+
+3. **Ridge Regression** (Baseline):
+   - Linear model with L2 regularization
+   - Serves as interpretable baseline
+   - Helps assess non-linearity in data
+
+#### 3.6.2 Preprocessing Pipeline
+
+**Column Transformer Structure**:
+```python
+1. Numeric Features:
+   - Imputer: Median imputation
+   - Scaler: StandardScaler (zero mean, unit variance)
+
+2. Categorical Features:
+   - Imputer: Most frequent value
+   - Encoder: OneHotEncoder (sparse=False for compatibility)
+```
+
+**Train-Test Split**:
+- **Split Ratio**: 80% training, 20% testing
+- **Random State**: 42 for reproducibility
+- **Stratification**: Not used (regression problem)
+
+#### 3.6.3 Evaluation Methodology
+
+**Cross-Validation**:
+- **Method**: 5-fold K-Fold
+- **Shuffling**: Enabled with random_state=42
+- **Metric**: R² score (coefficient of determination)
+
+**Performance Metrics**:
+1. **Primary**: R² (variance explained)
+2. **Secondary**: 
+   - MAE (Mean Absolute Error) in kWh/year
+   - RMSE (Root Mean Squared Error) 
+   - MAPE (Mean Absolute Percentage Error)
+
+**Validation Strategy**:
+1. Cross-validation on training set (5 folds)
+2. Final evaluation on held-out test set
+3. Comparison across all three models
+
+## 4. Implementation Details
+
+### 4.1 Code Structure
+
+```
+swiss_dwellings_analysis/
+├── data_processing.py          # Data loading, cleaning, aggregation
+├── feature_engineering.py      # Feature creation and selection
+├── modeling.py                 # Model training and evaluation
+├── visualization.py            # Plot generation
+├── config.py                   # Configuration parameters
+├── utils.py                    # Helper functions
+└── run_pipeline.py            # Main execution script
+```
+
+### 4.2 Key Functions
+
+#### 4.2.1 Data Processing Functions
+- `load_data_memory_efficient()`: Optimized CSV reading with dtype inference
+- `aggregate_to_apartments_enhanced()`: Room-to-apartment aggregation
+- `optimize_memory()`: DataFrame memory optimization
+
+#### 4.2.2 Feature Engineering Functions  
+- `engineer_features_enhanced()`: Domain-specific feature creation
+- `select_features_enhanced()`: Variance and correlation-based selection
+- `create_improved_realistic_energy_target()`: Synthetic target generation
+
+#### 4.2.3 Modeling Functions
+- `build_model_comparison()`: Pipeline construction for all models
+- `compare_models()`: Comprehensive model evaluation
+- `analyze_feature_importance()`: Tree model interpretation
+
+### 4.3 Configuration Parameters
+
+```python
+# Key configuration settings
+DATA_SETTINGS = {
+    'sample_size': 100000,
+    'test_size': 0.2,
+    'random_state': 42,
+    'variance_threshold': 0.01,
+    'max_features': 15
+}
+
+MODEL_PARAMS = {
+    'GradientBoosting': {
+        'n_estimators': 150,
+        'learning_rate': 0.1,
+        'max_depth': 4
+    },
+    'RandomForest': {
+        'n_estimators': 100,
+        'max_depth': 10
+    }
+}
+```
+
+## 5. Results and Analysis
+
+### 5.1 Model Performance
+
+#### 5.1.1 Comparative Results
+| Model | Test R² | CV Mean R² | Test MAE | Test MAPE | Training Time |
+|-------|---------|------------|----------|-----------|---------------|
+| RandomForest | 0.6180 | 0.6426 | 150 kWh/year | 3.9% | ~45s |
+| GradientBoosting | 0.6173 | 0.6196 | 152 kWh/year | 4.0% | ~60s |
+| Ridge | 0.4351 | 0.4480 | 291 kWh/year | 8.5% | ~5s |
+
+#### 5.1.2 Key Findings
+1. **Tree-based models outperform linear model**: 0.62 vs 0.44 R², confirming non-linear relationships
+2. **RandomForest slightly better than GradientBoosting**: 0.6180 vs 0.6173 R²
+3. **Good prediction accuracy**: 3.9% MAPE indicates practical usefulness
+4. **Consistent cross-validation**: CV scores align with test scores, suggesting no overfitting
+
+### 5.2 Feature Importance Analysis
+
+#### 5.2.1 Top Features (RandomForest)
+1. **layout_perimeter** (56.7%): Strongest predictor, relates to heat loss through building envelope
+2. **layout_area** (17.6%): Direct relationship with energy needs
+3. **layout_window_perimeter** (5.1%): Windows as primary heat loss/gain elements
+4. **layout_number_of_windows** (3.9%): Additional window-related effects
+5. **layout_net_area** (2.9%): Usable area affecting energy consumption
+
+#### 5.2.2 Domain Interpretation
+- **Perimeter dominance**: Aligns with Swiss building physics where envelope heat loss is critical
+- **Area relationships**: Consistent with energy being area-dependent
+- **Window importance**: Windows are thermal weak points in Swiss buildings
+- **Compactness**: Negative correlation (-0.231) confirms energy efficiency of compact forms
+
+### 5.3 Data Quality Impact
+
+#### 5.3.1 Preprocessing Effectiveness
+- **Missing value handling**: 4.17% missing reduced to 0% through imputation
+- **Feature reduction**: 367 original features → 16 modeling features
+- **Variance filtering**: Removed 148 near-constant features
+- **Memory optimization**: 137.8 MB → 136.3 MB (1.1% reduction)
+
+#### 5.3.2 Aggregation Impact
+- **Data volume**: 100,000 room records → 11,913 apartment records
+- **Information preservation**: Mean/mode aggregation maintains key patterns
+- **Noise reduction**: Room-level variation smoothed at apartment level
+
+## 6. Swiss Building Context
+
+### 6.1 Relevance to Swiss Building Stock
+
+#### 6.1.1 Climate Considerations
+- **Altitude range**: 200-2500m in dataset matches Swiss topography
+- **Climate zones**: Represented through altitude and canton features
+- **Heating demands**: Higher altitudes require more energy (model captures this)
+
+#### 6.1.2 Building Characteristics
+- **Age distribution**: Buildings from 1900-2024 represent Swiss stock
+- **Construction types**: Mix of old, modern, and standard buildings
+- **Energy standards**: Synthetic target reflects SIA 380/1 progression
+
+### 6.2 Energy Efficiency Insights
+
+#### 6.2.1 Key Efficiency Factors
+1. **Building Form**: Compactness reduces heat loss (captured in model)
+2. **Window Design**: Balance between daylight and heat loss (window perimeter)
+3. **Orientation**: Solar gain through sun features (solar_efficiency)
+4. **Insulation**: Implicit through age and construction quality
+
+#### 6.2.2 Swiss-Specific Patterns
+- **Mountainous regions**: Higher altitude → increased heating needs
+- **Urban vs rural**: Captured through view and noise features
+- **Building regulations**: Reflected in feature distributions
+
+## 7. Limitations and Assumptions
+
+### 7.1 Data Limitations
+
+#### 7.1.1 Synthetic Target Constraints
+- **Assumption-based**: Target created from principles, not measured data
+- **Simplified physics**: Real energy consumption has more complex determinants
+- **Validation gap**: Cannot validate against actual consumption data
+
+#### 7.1.2 Dataset Limitations
+- **Sample bias**: Commercial client data may not represent all Swiss buildings
+- **Geographic coverage**: Concentrated in certain regions
+- **Time period**: Static snapshot without temporal variation
+
+### 7.2 Modeling Limitations
+
+#### 7.2.1 Technical Constraints
+- **Feature interactions**: Limited to pairwise in tree models
+- **Non-linearities**: Captured but not explicitly modeled
+- **Uncertainty quantification**: Not provided in current implementation
+
+#### 7.2.2 Practical Constraints
+- **Computational limits**: Memory optimization required for full processing
+- **Simplified treatment**: Some real-world complexities not captured
+- **Generalization**: Model specific to Swiss context
+
+### 7.3 Assumptions Made
+
+1. **Target generation**: Building physics principles adequately represent energy use
+2. **Missing data**: Missing at random for imputation methods
+3. **Feature relationships**: Correlations stable across building types
+4. **Aggregation**: Apartment-level appropriate for energy analysis
+
+## 8. Reproducibility
+
+### 8.1 Environment Setup
+
+#### 8.1.1 Package Requirements
+```python
+# requirements.txt
+pandas>=1.5.0
+numpy>=1.23.0
+scikit-learn>=1.2.0
+matplotlib>=3.6.0
+seaborn>=0.12.0
+joblib>=1.2.0
+```
+
+#### 8.1.2 Data Requirements
+1. Primary data: `simulations.csv` from Zenodo dataset
+2. Geometric data: `geometries.csv` from Zenodo dataset
+3. Storage: ~500 MB available for processed data
+
+### 8.2 Execution Instructions
+
+#### 8.2.1 Basic Execution
+```bash
+# Clone and setup
+git clone <repository>
+cd swiss_dwellings_analysis
+pip install -r requirements.txt
+
+# Run full pipeline
+python run_pipeline.py
+
+# Run specific components
+python -m data_processing.py
+python -m modeling.py
+```
+
+#### 8.2.2 Configuration Options
+```python
+# In config.py adjust as needed
+CONFIG = {
+    'data_path': './data',
+    'sample_size': None,  # Set to None for full dataset
+    'output_dir': './output',
+    'random_state': 42,
+    'test_size': 0.2
+}
+```
+
+### 8.3 Output Files
+
+#### 8.3.1 Generated Files Structure
+```
+output/
+├── models/
+│   └── best_model_randomforest_YYYYMMDD_HHMMSS.pkl
+├── data/
+│   └── swiss_dwellings_processed_final_YYYYMMDD_HHMMSS.csv
+├── plots/
+│   ├── energy_distribution_improved.png
+│   ├── feature_correlations_enhanced.png
+│   └── model_comparison.png
+├── reports/
+│   ├── final_report_comprehensive_YYYYMMDD_HHMMSS.json
+│   ├── data_quality_report.json
+│   └── model_comparison_results_YYYYMMDD_HHMMSS.json
+└── model_comparison/
+    ├── feature_importance_gradientboosting.csv
+    ├── feature_importance_randomforest.csv
+    └── feature_importance_gradientboosting.png
+```
+
+#### 8.3.2 Report Contents
+- **Data Quality Report**: Missing values, data types, memory usage
+- **Model Comparison**: Performance metrics across all models
+- **Feature Analysis**: Correlations, importance scores, selections
+- **Execution Summary**: Timings, configurations, decisions
+
+## 9. Conclusion and Future Work
+
+### 9.1 Project Achievements
+
+#### 9.1.1 Technical Accomplishments
+1. **Complete pipeline**: End-to-end from raw data to model evaluation
+2. **Memory efficiency**: Handled large dataset within constraints
+3. **Domain integration**: Swiss building physics incorporated throughout
+4. **Reproducible research**: Complete documentation and code
+
+#### 9.1.2 Analytical Insights
+1. **Feature relationships**: Identified key predictors of energy use
+2. **Model performance**: Achieved 61.8% variance explained
+3. **Data quality**: Effective handling of missing values and aggregation
+4. **Practical relevance**: Insights applicable to Swiss building context
+
+### 9.2 Recommendations for Application
+
+#### 9.2.1 Practical Use Cases
+1. **Building design**: Optimize form and window placement for energy efficiency
+2. **Retrofit planning**: Identify high-impact improvement areas
+3. **Policy analysis**: Understand drivers of building energy use
+4. **Educational tool**: Demonstrate building physics principles
+
+#### 9.2.2 Implementation Considerations
+1. **Target refinement**: Replace synthetic with actual consumption data when available
+2. **Feature expansion**: Include additional building systems (HVAC, lighting)
+3. **Regional calibration**: Adjust for specific Swiss cantons or municipalities
+4. **Validation**: Cross-check with energy performance certificates
+
+### 9.3 Future Development Directions
+
+#### 9.3.1 Technical Improvements
+1. **Advanced modeling**: Neural networks for complex non-linearities
+2. **Uncertainty quantification**: Bayesian methods or prediction intervals
+3. **Temporal dynamics**: Incorporate seasonal and usage patterns
+4. **Feature engineering**: More sophisticated building physics features
+
+#### 9.3.2 Data Enhancements
+1. **Actual consumption data**: Partner with utilities or building managers
+2. **Additional features**: Construction materials, insulation levels, systems
+3. **Geographic expansion**: Broader coverage of Swiss building stock
+4. **Temporal data**: Multiple years to capture trends and variations
+
+#### 9.3.3 Application Extensions
+1. **Retrofit optimization**: Prioritization of energy efficiency measures
+2. **Policy simulation**: Impact assessment of building regulations
+3. **Educational platform**: Interactive tool for building design students
+4. **Industry integration**: Plugin for architectural design software
+
+### 9.4 Final Assessment
+
+This project successfully demonstrates a complete data science pipeline for building energy analysis, with particular attention to Swiss context and building physics principles. While limited by synthetic target data, the methodology shows robust data processing, meaningful feature engineering, and effective model implementation that could be directly applied to real energy data when available.
+
+The work aligns with Swiss energy efficiency goals and provides a foundation for practical tools to support building design, retrofit planning, and policy development in the Swiss context.
+
+---
+
+*Documentation Version: 1.0*  
+*Last Updated: December 2024*  
+*Dataset Source: Zenodo (DOI: 10.5281/zenodo.7070952)*  
+*Project Framework: Based on semester project requirements for data science course*
